@@ -1,6 +1,6 @@
 # 🎵 Shruti Music Hoster Bot 🎵
 
-![Shruti Music Hoster](https://i.imgur.com/4WXsA6S.jpeg)
+![Shruti Music Hoster](https://envs.sh/r2J.jpg)
 
 A powerful Telegram bot to host your own music bot with ease! This bot allows users to deploy their own music bots without any technical knowledge - just provide the necessary tokens and information, and your bot will be ready in minutes!
 
