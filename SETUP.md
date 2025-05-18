@@ -30,8 +30,8 @@ export DEFAULT_MONGO_DB_URI="your_default_mongodb_uri"
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/music-hoster-bot.git
-   cd music-hoster-bot
+   git clone https://github.com/MesteriousPrivate/MHost.git
+   cd MHost
    ```
 
 2. Install the required packages:
