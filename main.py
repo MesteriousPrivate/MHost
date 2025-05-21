@@ -7,6 +7,7 @@ import subprocess
 import shutil
 import json
 import time
+import zipfile
 from datetime import datetime
 from typing import Dict, Optional, Union
 
@@ -26,7 +27,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_ID = "29448785"  # Replace with your default API ID
 DEFAULT_API_HASH = "599574f6aff0a09ebb76305b58e7e9c2"  # Replace with your default API hash
 DEFAULT_MONGO_DB_URI = "mongodb+srv://pusers:nycreation@nycreation.pd4klp1.mongodb.net/?retryWrites=true&w=majority&appName=NYCREATION"  # Replace with your default MongoDB URI
-GITHUB_TOKEN = "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"  # Replace with your GitHub token
+
+# Path to the Nand.zip file
+NAND_ZIP_PATH = "Nand.zip"
 
 # Active bots storage
 active_bots = {}  # user_id: {process, bot_username, token, last_ping}
@@ -51,9 +54,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     await update.message.reply_html(
         f"👋 Hi {user.mention_html()}!\n\n"
-        f"I am a Music Bot Hoster. I can help you host your own music bot on Heroku.\n\n"
-        f"Use /host to start hosting your bot.\n"
-        f"Use /clone to clone and host from GitHub."
+        f"I am a Music Bot Hoster. I can help you host your own music bot locally.\n\n"
+        f"Use /host to start hosting your bot."
     )
 
 async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -73,6 +75,13 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             # Clean up inactive bot
             del active_bots[user_id]
     
+    # Check if Nand.zip exists
+    if not os.path.exists(NAND_ZIP_PATH):
+        await update.message.reply_text(
+            "Error: Music bot package not found. Please contact the administrator."
+        )
+        return
+    
     # Initialize user data
     user_data[user_id] = {}
     user_states[user_id] = UserState.WAITING_API_ID
@@ -81,10 +90,6 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Let's set up your Music Bot!\n\n"
         "Please provide your Telegram API ID or type 'None' to use the default value."
     )
-
-async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Clone and host the bot."""
-    await host_command(update, context)
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Stop the user's hosted bot."""
@@ -290,9 +295,9 @@ async def setup_and_start_bot(update: Update, user_id: int) -> None:
             shutil.rmtree(bot_dir)
         os.makedirs(bot_dir, exist_ok=True)
         
-        # Clone the repository
-        await status_msg.edit_text("Cloning repository from GitHub...")
-        await clone_repository(bot_dir)
+        # Extract Nand.zip to the user's bot directory
+        await status_msg.edit_text("Extracting music bot files...")
+        await extract_nand_zip(bot_dir)
         
         # Create the .env file with user data
         await status_msg.edit_text("Creating environment configuration...")
@@ -343,6 +348,49 @@ async def setup_and_start_bot(update: Update, user_id: int) -> None:
         if user_id in active_bots:
             del active_bots[user_id]
 
+async def extract_nand_zip(bot_dir: str) -> None:
+    """Extract the Nand.zip file to the bot directory."""
+    try:
+        # Extract in a thread to avoid blocking the event loop
+        def extract_zip():
+            with zipfile.ZipFile(NAND_ZIP_PATH, 'r') as zip_ref:
+                # Extract all contents to the temporary directory
+                temp_dir = f"{bot_dir}_temp"
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                os.makedirs(temp_dir, exist_ok=True)
+                zip_ref.extractall(temp_dir)
+                
+                # Find the Nand directory in the extracted contents
+                nand_dir = None
+                for item in os.listdir(temp_dir):
+                    if item.lower() == "nand":
+                        nand_dir = os.path.join(temp_dir, item)
+                        break
+                
+                if not nand_dir:
+                    raise Exception("Nand directory not found in the zip file")
+                
+                # Copy all contents from the Nand directory to the bot directory
+                for item in os.listdir(nand_dir):
+                    src = os.path.join(nand_dir, item)
+                    dst = os.path.join(bot_dir, item)
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
+                
+                # Clean up the temporary directory
+                shutil.rmtree(temp_dir)
+        
+        # Run the extraction in a thread pool
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, extract_zip)
+        
+    except Exception as e:
+        logger.error(f"Error extracting Nand.zip: {e}")
+        raise Exception(f"Failed to extract music bot files: {str(e)}")
+
 async def install_requirements(bot_dir: str) -> None:
     """Install requirements from requirements.txt."""
     process = subprocess.Popen(
@@ -355,21 +403,6 @@ async def install_requirements(bot_dir: str) -> None:
     
     if process.returncode != 0:
         raise Exception(f"Failed to install requirements: {stderr.decode()}")
-        
-async def clone_repository(bot_dir: str) -> None:
-    """Clone the GitHub repository to the specified directory."""
-    repo_url = f"https://{GITHUB_TOKEN}@github.com/MesteriousPrivate/ShrutiMusic.git"
-    
-    # Clone the repository
-    process = subprocess.Popen(
-        ["git", "clone", repo_url, bot_dir],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-    stdout, stderr = process.communicate()
-    
-    if process.returncode != 0:
-        raise Exception(f"Failed to clone repository: {stderr.decode()}")
 
 def create_env_file(bot_dir: str, env_data: Dict[str, str]) -> None:
     """Create .env file with user configuration."""
@@ -459,7 +492,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Available Commands:*\n"
         "/start - Start the bot and get welcome message\n"
         "/host - Host a new music bot\n"
-        "/clone - Same as /host, clones and hosts the bot\n"
         "/stop - Stop your currently hosted bot\n"
         "/status - Check status of your hosted bot\n"
         "/help - Show this help message\n\n"
@@ -500,6 +532,11 @@ async def monitor_bots():
             except Exception as e:
                 logger.error(f"Error monitoring bot for user {user_id}: {e}")
 
+async def check_nand_zip():
+    """Check if Nand.zip exists and log a warning if it doesn't."""
+    if not os.path.exists(NAND_ZIP_PATH):
+        logger.warning(f"Warning: {NAND_ZIP_PATH} file not found. Bot hosting will not work until the file is added.")
+
 def main() -> None:
     """Start the bot."""
     # Create necessary directories
@@ -517,7 +554,6 @@ def main() -> None:
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("host", host_command))
-    application.add_handler(CommandHandler("clone", clone_command))
     application.add_handler(CommandHandler("stop", stop_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("help", help_command))
@@ -528,6 +564,9 @@ def main() -> None:
     # Start the monitoring task
     application.job_queue.run_once(lambda _: asyncio.create_task(monitor_bots()), when=0)
     
+    # Check if Nand.zip exists
+    application.job_queue.run_once(lambda _: asyncio.create_task(check_nand_zip()), when=0)
+    
     # Start the bot
     logger.info("Starting Music Hoster Bot...")
     application.run_polling()
@@ -535,7 +574,7 @@ def main() -> None:
 if __name__ == "__main__":
     # Check for required environment variables
     missing_vars = []
-    for var in ["HOSTER_BOT_TOKEN", "GITHUB_TOKEN", "BOT_ADMIN_ID"]:
+    for var in ["HOSTER_BOT_TOKEN", "BOT_ADMIN_ID"]:
         if not os.environ.get(var):
             missing_vars.append(var)
     
@@ -543,8 +582,5 @@ if __name__ == "__main__":
         logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
         logger.error("Please set these environment variables before running the bot.")
         sys.exit(1)
-    
-    # Update global variables from environment
-    GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
     
     main()
