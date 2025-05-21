@@ -23,10 +23,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Default configuration values
-DEFAULT_API_ID = "12345"  # Replace with your default API ID
-DEFAULT_API_HASH = "your_default_api_hash"  # Replace with your default API hash
-DEFAULT_MONGO_DB_URI = "mongodb+srv://username:password@cluster.mongodb.net/dbname"  # Replace with your default MongoDB URI
-GITHUB_TOKEN = "your_github_token"  # Replace with your GitHub token
+DEFAULT_API_ID = "29448785"  # Replace with your default API ID
+DEFAULT_API_HASH = "599574f6aff0a09ebb76305b58e7e9c2"  # Replace with your default API hash
+DEFAULT_MONGO_DB_URI = "mongodb+srv://pusers:nycreation@nycreation.pd4klp1.mongodb.net/?retryWrites=true&w=majority&appName=NYCREATION"  # Replace with your default MongoDB URI
+GITHUB_TOKEN = "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"  # Replace with your GitHub token
 
 # Active bots storage
 active_bots = {}  # user_id: {process, bot_username, token, last_ping}
