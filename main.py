@@ -6,6 +6,7 @@ import re
 import subprocess
 import shutil
 import json
+import time
 from datetime import datetime
 from typing import Dict, Optional, Union
 
@@ -28,7 +29,7 @@ DEFAULT_MONGO_DB_URI = "mongodb+srv://username:password@cluster.mongodb.net/dbna
 GITHUB_TOKEN = "your_github_token"  # Replace with your GitHub token
 
 # Active bots storage
-active_bots = {}  # user_id: {process, bot_username, token}
+active_bots = {}  # user_id: {process, bot_username, token, last_ping}
 
 # States for conversation handling
 class UserState:
@@ -61,10 +62,16 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     # Check if user already has a bot hosted
     if user_id in active_bots:
-        await update.message.reply_text(
-            "You already have an active bot. Please use /stop to stop it before hosting a new one."
-        )
-        return
+        bot_info = active_bots[user_id]
+        if is_bot_running(bot_info):
+            await update.message.reply_text(
+                f"You already have an active bot @{bot_info.get('username', 'Unknown')}. "
+                "Please use /stop to stop it before hosting a new one."
+            )
+            return
+        else:
+            # Clean up inactive bot
+            del active_bots[user_id]
     
     # Initialize user data
     user_data[user_id] = {}
@@ -77,7 +84,6 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Clone and host the bot."""
-    # This is the same as host_command for our implementation
     await host_command(update, context)
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -91,9 +97,12 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         # Kill the bot process
         bot_info = active_bots[user_id]
-        if 'process' in bot_info and bot_info['process']:
+        if is_bot_running(bot_info):
             bot_info['process'].terminate()
-            bot_info['process'].wait()
+            try:
+                bot_info['process'].wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                bot_info['process'].kill()
         
         # Remove the bot directory
         bot_dir = f"bots/{user_id}"
@@ -120,9 +129,12 @@ async def stop_all_bots(update: Update) -> None:
     """Stop all active bots."""
     for user_id, bot_info in list(active_bots.items()):
         try:
-            if 'process' in bot_info and bot_info['process']:
+            if is_bot_running(bot_info):
                 bot_info['process'].terminate()
-                bot_info['process'].wait()
+                try:
+                    bot_info['process'].wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    bot_info['process'].kill()
             
             bot_dir = f"bots/{user_id}"
             if os.path.exists(bot_dir):
@@ -134,6 +146,14 @@ async def stop_all_bots(update: Update) -> None:
     
     active_bots.clear()
     await update.message.reply_text("All bots have been stopped.")
+
+def is_bot_running(bot_info: dict) -> bool:
+    """Check if the bot process is still running."""
+    if 'process' not in bot_info or not bot_info['process']:
+        return False
+    
+    # Check if process is still alive
+    return bot_info['process'].poll() is None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming messages based on the current state."""
@@ -285,17 +305,23 @@ async def setup_and_start_bot(update: Update, user_id: int) -> None:
         
         # Start the bot
         await status_msg.edit_text("Starting your music bot...")
-        process = start_bot_process(bot_dir)
+        process = await start_bot_process(bot_dir)
         
         # Get bot information
         bot_token = env_data['bot_token']
         bot_username = await get_bot_username(bot_token)
         
+        # Verify bot is actually running
+        await status_msg.edit_text("Verifying bot startup...")
+        if not await verify_bot_running(bot_token):
+            raise Exception("Bot failed to start properly")
+        
         # Store active bot information
         active_bots[user_id] = {
             'process': process,
             'token': bot_token,
-            'username': bot_username
+            'username': bot_username,
+            'last_ping': time.time()
         }
         
         # Notify user
@@ -312,6 +338,10 @@ async def setup_and_start_bot(update: Update, user_id: int) -> None:
         bot_dir = f"bots/{user_id}"
         if os.path.exists(bot_dir):
             shutil.rmtree(bot_dir)
+        
+        # Remove from active bots if added
+        if user_id in active_bots:
+            del active_bots[user_id]
 
 async def install_requirements(bot_dir: str) -> None:
     """Install requirements from requirements.txt."""
@@ -359,7 +389,7 @@ def create_env_file(bot_dir: str, env_data: Dict[str, str]) -> None:
     with open(f"{bot_dir}/.env", "w") as f:
         f.write("\n".join(env_content))
 
-def start_bot_process(bot_dir: str) -> subprocess.Popen:
+async def start_bot_process(bot_dir: str) -> subprocess.Popen:
     """Start the bot process."""
     # Use bash start script from the repository
     process = subprocess.Popen(
@@ -371,7 +401,34 @@ def start_bot_process(bot_dir: str) -> subprocess.Popen:
         bufsize=1
     )
     
+    # Wait a moment to catch immediate failures
+    await asyncio.sleep(5)
+    
+    if process.poll() is not None:
+        # Process already terminated
+        stdout, stderr = process.communicate()
+        raise Exception(f"Bot process failed to start: {stderr}")
+    
     return process
+
+async def verify_bot_running(bot_token: str) -> bool:
+    """Verify that the bot is actually running and responding."""
+    try:
+        bot = telegram.Bot(bot_token)
+        
+        # Try to get bot info - if this succeeds, bot is running
+        for _ in range(5):  # Try 5 times with delay
+            try:
+                await bot.get_me()
+                return True
+            except telegram.error.TimedOut:
+                await asyncio.sleep(2)
+                continue
+        
+        return False
+    except Exception as e:
+        logger.error(f"Error verifying bot: {e}")
+        return False
 
 async def get_bot_username(token: str) -> str:
     """Get the username of the bot using its token."""
@@ -388,8 +445,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     
     bot_info = active_bots[user_id]
+    status = "running" if is_bot_running(bot_info) else "not responding"
+    
     await update.message.reply_text(
-        f"Your bot @{bot_info.get('username', 'Unknown')} is currently active."
+        f"Your bot @{bot_info.get('username', 'Unknown')} is currently {status}.\n"
+        f"Last active: {time.ctime(bot_info.get('last_ping', 0))}"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -421,6 +481,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     await update.message.reply_markdown(help_text)
 
+async def monitor_bots():
+    """Periodically check if bots are still running."""
+    while True:
+        await asyncio.sleep(60)  # Check every minute
+        
+        for user_id, bot_info in list(active_bots.items()):
+            try:
+                if not is_bot_running(bot_info):
+                    logger.warning(f"Bot @{bot_info.get('username')} for user {user_id} is not running")
+                    del active_bots[user_id]
+                    continue
+                
+                # Update last ping time if bot is responding
+                bot = telegram.Bot(bot_info['token'])
+                if await bot.get_me():
+                    bot_info['last_ping'] = time.time()
+            except Exception as e:
+                logger.error(f"Error monitoring bot for user {user_id}: {e}")
+
 def main() -> None:
     """Start the bot."""
     # Create necessary directories
@@ -445,6 +524,9 @@ def main() -> None:
     
     # Add message handler for collecting data
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Start the monitoring task
+    application.job_queue.run_once(lambda _: asyncio.create_task(monitor_bots()), when=0)
     
     # Start the bot
     logger.info("Starting Music Hoster Bot...")
